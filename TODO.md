@@ -20,6 +20,12 @@
   fine, but a file opened with no terminal attached - `ee --exec emacsclient -n
   ...`, say - leaves the whole daemon waiting.
 
+- **State is shared across projects** - `elpa` and `eln-cache` are worth sharing,
+  but `savehist` and `recentf` live on the same volume, so two daemons exiting
+  at once can lose one of their histories. Splitting only the history files
+  would need a per-project identity inside the container, which does not exist
+  yet.
+
 ## Not verified
 
 CI runs the container checks on Linux only. Neither hosted platform can run

@@ -38,7 +38,7 @@ copy config\wezterm\wezterm.lua %USERPROFILE%\.wezterm.lua             # Windows
 # Fetch the image
 ee --pull
 
-# Open it. $HOME is mounted at /workspace
+# Open it from a project. Its root is mounted at /workspace
 ee
 ```
 
@@ -128,6 +128,14 @@ list - which also means no machine waits for native compilation on first start.
 **Split by apt layer, not by language.** Per-language images explode
 combinatorially and cannot be composed. Languages live in [mise][mise] on a
 shared volume, which is what lets one daemon serve projects that mix them.
+
+**One container per project.** Mounting `$HOME` would hand the container every
+file the user owns, and mounts cannot be added to a running one - so the only
+way to narrow them is to scope the container itself. The workspace is the
+nearest ancestor with a `.git`, and the container name follows from that path,
+so every subdirectory of a project reaches the same daemon and no two projects
+share one. Language servers are per project anyway, so the extra cost is one
+Emacs process, around 45 MB.
 
 **A resident daemon.** Recreating the container each time would repeat native
 compilation and LSP indexing. `buffer-env` swaps `exec-path` per buffer so that
