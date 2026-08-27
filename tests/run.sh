@@ -32,7 +32,11 @@ done
 
 if [ "$rc" -eq 0 ]; then
     printf 'all checks passed\n'
+    summary ""
+    summary "**All checks passed** on \`${DEVMACS_TEST_IMAGE}\` (${DEVMACS_TEST_VARIANT})."
 else
     printf 'there were failures\n'
+    summary ""
+    summary "**Some checks failed** on \`${DEVMACS_TEST_IMAGE}\` (${DEVMACS_TEST_VARIANT})."
 fi
 exit "$rc"

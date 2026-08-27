@@ -18,8 +18,15 @@ FIXTURE_DIR="${REPO_DIR}/.test-fixture"
 
 failures=0
 
-ok()  { printf '  ok    %s\n' "$*"; }
-bad() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); }
+# Mirrored into the job summary when running in CI, so that a pull request
+# shows what was checked without anyone opening the log.
+summary() {
+    [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+    printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY"
+}
+
+ok()  { printf '  ok    %s\n' "$*"; summary "| ✅ | $* |"; }
+bad() { printf '  FAIL  %s\n' "$*"; failures=$((failures + 1)); summary "| ❌ | **$*** |"; }
 
 check() {  # check DESCRIPTION ACTUAL EXPECTED
     if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 -- got [$2], want [$3]"; fi
@@ -45,6 +52,17 @@ finish() {
         exit 1
     fi
     exit 0
+}
+
+# Each file opens its own table. Titles come from the file name so that adding
+# a check never means editing a heading somewhere else.
+summary_open() {
+    [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+    summary ""
+    summary "### $(basename "$0" .sh)"
+    summary ""
+    summary "|   | check |"
+    summary "|---|---|"
 }
 
 # --- talking to the container -------------------------------------------
@@ -123,3 +141,9 @@ ensure_container() {
     make_fixture
     start_container
 }
+
+# run.sh drives the files rather than being one, so it opens no table.
+case "$(basename "$0")" in
+    run.sh) ;;
+    *) summary_open ;;
+esac
