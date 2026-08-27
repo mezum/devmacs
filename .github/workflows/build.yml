@@ -24,7 +24,7 @@ env:
 
 jobs:
   build:
-    name: ${{ matrix.target }} (${{ matrix.platform }})
+    name: build ${{ matrix.target }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [base, native]
+        target: [slim, base]
         platform: [linux/amd64, linux/arm64]
         include:
           - platform: linux/amd64
@@ -88,8 +88,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Runs the same checks that are available locally as tests/run.sh. Rebuilding
+  # for a single architecture is cheap here because the layers are already in
+  # the cache that `build` populated.
   merge:
-    name: manifest (${{ matrix.target }})
+    name: manifest ${{ matrix.target }}
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-24.04
@@ -99,7 +102,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [base, native]
+        target: [slim, base]
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4

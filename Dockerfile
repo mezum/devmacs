@@ -5,6 +5,9 @@
 # Images are split by apt layer, not by language. Languages live in mise on a
 # shared volume, so one container and one Emacs daemon can serve projects that
 # mix languages, and the tag count stays at two instead of exploding.
+#
+#   base   the default; everything below plus a C/C++ toolchain
+#   slim   Emacs, mise and the common CLI tools only
 
 ARG DEBIAN_RELEASE=trixie
 
@@ -74,9 +77,9 @@ RUN cargo install emacs-lsp-booster \
       --locked --version "${LSP_BOOSTER_VERSION}" --root /opt/booster
 
 ########################################################################
-# base - the image to use unless a project needs a C/C++ toolchain.
+# slim - no compiler toolchain. Smaller, but native extensions will not build.
 ########################################################################
-FROM debian:${DEBIAN_RELEASE}-slim AS base
+FROM debian:${DEBIAN_RELEASE}-slim AS slim
 
 ARG MISE_VERSION=2026.8.14
 ARG TARGETARCH
@@ -159,12 +162,13 @@ ENTRYPOINT ["/usr/local/bin/devmacs-entrypoint"]
 CMD ["emacs", "--fg-daemon", "--init-directory=/home/dev/.emacs.d"]
 
 ########################################################################
-# native - for projects that build C/C++ or native extensions.
+# base - the default. Plenty of language runtimes build native extensions on
+# install, so a toolchain being missing is a worse surprise than a larger image.
 #
-# Only the apt layer differs. Anything mise can install belongs in mise.toml,
-# not in a second image.
+# Only the apt layer differs from slim. Anything mise can install belongs in
+# mise.toml, not in a third image.
 ########################################################################
-FROM base AS native
+FROM slim AS base
 
 # No USER here: the entrypoint needs root to fix up uid/gid before it drops
 # to dev with gosu.
