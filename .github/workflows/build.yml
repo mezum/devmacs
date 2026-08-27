@@ -23,6 +23,64 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck --shell=sh --severity=warning \
+            ee docker/entrypoint.sh tests/*.sh
+
+  # Neither the Windows nor the macOS hosted runners can run Linux containers -
+  # Windows has no WSL2 backend for Docker, and the arm64 macOS runners have no
+  # nested virtualisation - so these platforms cover what needs no container.
+  # It is still the only place the Windows launchers can be run at all.
+  cli:
+    name: cli (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ee
+        shell: bash
+        run: sh tests/00-cli.sh
+
+      - name: ee.ps1 reaches ee
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = ./ee.ps1 --help 2>&1 | Out-String
+          if ($out -notmatch 'Usage: ee') {
+            Write-Host $out
+            exit 1
+          }
+          Write-Host 'ok'
+
+      - name: ee.bat reaches ee
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          ee.bat --help | findstr /C:"Usage: ee" > nul || exit /b 1
+          echo ok
+
+      # What each platform actually offers is worth recording; TODO.md tracks
+      # which of these have been exercised for real.
+      - name: available runtimes
+        shell: bash
+        run: |
+          for r in docker podman nerdctl finch container wslc; do
+            if command -v "$r" >/dev/null 2>&1; then
+              echo "found : $r"
+            else
+              echo "absent: $r"
+            fi
+          done
+
   build:
     name: build ${{ matrix.target }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -91,10 +149,39 @@ jobs:
   # Runs the same checks that are available locally as tests/run.sh. Rebuilding
   # for a single architecture is cheap here because the layers are already in
   # the cache that `build` populated.
+  test:
+    name: test ${{ matrix.target }}
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [slim, base]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          load: true
+          tags: devmacs:test
+          cache-from: type=gha,scope=${{ matrix.target }}-amd64
+
+      - name: Run checks
+        run: tests/run.sh
+        env:
+          DEVMACS_TEST_IMAGE: devmacs:test
+          DEVMACS_TEST_VARIANT: ${{ matrix.target }}
+
   merge:
     name: manifest ${{ matrix.target }}
     if: github.event_name != 'pull_request'
-    needs: build
+    needs: [lint, cli, build, test]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
