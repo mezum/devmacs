@@ -9,12 +9,40 @@
 set -eu
 
 : "${DEVMACS_IMAGE:=ghcr.io/mezum/devmacs:base}"
-: "${DEVMACS_NAME:=devmacs}"
-# $HOME rather than a subdirectory: it always exists, and a missing workspace
-# should be an error rather than something this script silently creates.
-: "${DEVMACS_WORKSPACE:=${HOME}}"
-DEVMACS_WORKSPACE="${DEVMACS_WORKSPACE%/}"
 : "${DEVMACS_USER_CONFIG:=${XDG_CONFIG_HOME:-${HOME}/.config}/devmacs}"
+
+# The nearest ancestor holding a .git, or the current directory. Mounting $HOME
+# would hand the container every file the user owns - ssh keys, browser
+# profiles, unrelated repositories - which is far more than project tooling
+# needs. Mounts cannot be added to a running container, so the only way to
+# narrow them is to scope the container itself to a project.
+project_root() {
+    dir="$(pwd -P)"
+    while [ "$dir" != "/" ]; do
+        if [ -e "${dir}/.git" ]; then
+            printf '%s' "$dir"
+            return
+        fi
+        dir="$(dirname "$dir")"
+    done
+    pwd -P
+}
+
+: "${DEVMACS_WORKSPACE:=$(project_root)}"
+DEVMACS_WORKSPACE="${DEVMACS_WORKSPACE%/}"
+
+# Derived from the path so that each project gets its own daemon, and so that
+# every subdirectory of a project reaches the same one. The basename is there
+# only to keep `ps` readable; the digest is what identifies it.
+container_name_for() {
+    # printf rather than a bare pipe: basename emits a trailing newline, which
+    # tr would turn into another separator.
+    base="$(printf '%s' "$(basename "$1")" | tr -c 'a-zA-Z0-9_.-' '-')"
+    digest="$(printf '%s' "$1" | cksum | cut -d' ' -f1)"
+    printf 'devmacs-%s-%s' "$base" "$digest"
+}
+
+: "${DEVMACS_NAME:=$(container_name_for "$DEVMACS_WORKSPACE")}"
 
 usage() {
     cat <<'USAGE'
@@ -28,14 +56,15 @@ Actions:
   --user-install    install the packages your own config declares
   --pull            fetch the image again
   --restart         recreate the container
-  --stop            stop the container
+  --stop            stop this project's container
+  --stop-all        stop every devmacs container
   --status          show what is currently set up
   -h, --help        this
 
 Environment:
   DEVMACS_IMAGE        image to run        (default: ghcr.io/mezum/devmacs:base)
-  DEVMACS_NAME         container name      (default: devmacs)
-  DEVMACS_WORKSPACE    directory to mount  (default: $HOME -> /workspace)
+  DEVMACS_NAME         container name      (default: from the workspace path)
+  DEVMACS_WORKSPACE    directory to mount  (default: the project root)
   DEVMACS_USER_CONFIG  your own config     (default: ~/.config/devmacs)
   DEVMACS_STATE_DIR    host dir for state  (default: named volumes)
   DEVMACS_RUNTIME      pin the runtime
@@ -77,6 +106,11 @@ container_exists() {
         return 0
     fi
     "$RUNTIME" ps --all 2>/dev/null | awk 'NR > 1 { print $NF }' | grep -qx "$DEVMACS_NAME"
+}
+
+# Every project has its own container, so acting on all of them needs a list.
+list_containers() {
+    "$RUNTIME" ps --all --format '{{.Names}}' 2>/dev/null | grep '^devmacs-' || true
 }
 
 remove_container() {
@@ -223,6 +257,7 @@ while [ $# -gt 0 ]; do
         --shell)        action=shell;        shift ;;
         --restart)      action=restart;      shift ;;
         --stop)         action=stop;         shift ;;
+        --stop-all)     action=stop_all;     shift ;;
         --pull)         action=pull;         shift ;;
         --status)       action=status;       shift ;;
         --user-install) action=user_install; shift ;;
@@ -253,11 +288,40 @@ case "$action" in
         else
             printf 'user config: none at %s\n' "$DEVMACS_USER_CONFIG"
         fi
+
+        all="$(list_containers)"
+        if [ -n "$all" ]; then
+            printf '\nall projects:\n'
+            printf '%s\n' "$all" | while read -r name; do
+                if "$RUNTIME" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$name"; then
+                    state=running
+                else
+                    state=stopped
+                fi
+                if [ "$name" = "$DEVMACS_NAME" ]; then
+                    printf '  * %-34s %s\n' "$name" "$state"
+                else
+                    printf '    %-34s %s\n' "$name" "$state"
+                fi
+            done
+        fi
         ;;
     stop)
         "$RUNTIME" stop "$DEVMACS_NAME" >/dev/null 2>&1 \
             && printf 'ee: stopped\n' >&2 \
             || printf 'ee: not running\n' >&2
+        ;;
+    stop_all)
+        all="$(list_containers)"
+        if [ -z "$all" ]; then
+            printf 'ee: nothing to stop\n' >&2
+        else
+            printf '%s\n' "$all" | while read -r name; do
+                if "$RUNTIME" stop "$name" >/dev/null 2>&1; then
+                    printf 'ee: stopped %s\n' "$name" >&2
+                fi
+            done
+        fi
         ;;
     pull)
         "$RUNTIME" pull "$DEVMACS_IMAGE"

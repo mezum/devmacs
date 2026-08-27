@@ -83,6 +83,11 @@ make_fixture() {
              "$FIXTURE_DIR/workspace/plain" \
              "$FIXTURE_DIR/user-config/user-lisp"
 
+    # Two repositories and a directory belonging to neither, for the checks on
+    # how a project root is picked.
+    mkdir -p "$FIXTURE_DIR/projects/one/.git" "$FIXTURE_DIR/projects/one/src" \
+             "$FIXTURE_DIR/projects/two/.git"
+
     printf '[tools]\nnode = "22"\n' > "$FIXTURE_DIR/workspace/demo/mise.toml"
     printf 'console.log("hi")\n'    > "$FIXTURE_DIR/workspace/demo/index.js"
 
