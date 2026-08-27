@@ -173,6 +173,33 @@ editing that setting.
 
 What is missing or unverified is tracked in [TODO.md](TODO.md).
 
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or
+  <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
+
+### What the images contain
+
+That covers the files in this repository. The images built from them also carry
+GNU Emacs and a set of Debian packages, which come under their own licenses -
+the GPL among them. Sources for those are published at:
+
+- GNU Emacs - <https://ftp.gnu.org/gnu/emacs/> (the `Dockerfile` pins the exact
+  version and its sha256)
+- Debian packages - <https://deb.debian.org/debian/>
+- mise - <https://github.com/jdx/mise>
+- emacs-lsp-booster - <https://github.com/blahgeek/emacs-lsp-booster>
+
 [wezterm]: https://wezterm.org/
 [wezterm-config]: config/wezterm/wezterm.lua
 [mise]: https://mise.jdx.dev/
