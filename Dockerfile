@@ -142,12 +142,18 @@ ENV DEVMACS_CONFIG=/opt/devmacs/config
 ENV DEVMACS_USER_CONFIG=/opt/devmacs/user
 
 # Packages are installed and natively compiled here rather than on first run.
-# The result cannot live in $HOME/.emacs.d, because the state volume mounted
-# there at runtime would hide it, so it is staged as a seed instead.
-RUN install -d -o dev -g dev /opt/devmacs/seed; \
-    gosu dev env HOME=/home/dev \
-      emacs --batch --init-directory=/opt/devmacs/seed \
-            -l /opt/devmacs/config/bootstrap.el
+#
+# This has to happen at the very path the daemon will use later. An .eln file
+# name embeds a hash of the source file's absolute path, so compiling under any
+# other directory yields files that are silently ignored at runtime and rebuilt
+# by JIT - which is exactly the wait this is meant to avoid. The result is then
+# moved aside, because the state volume mounted over $HOME/.emacs.d at runtime
+# would otherwise hide it.
+RUN gosu dev env HOME=/home/dev \
+      emacs --batch --init-directory=/home/dev/.emacs.d \
+            -l /opt/devmacs/config/bootstrap.el; \
+    mv /home/dev/.emacs.d /opt/devmacs/seed; \
+    install -d -o dev -g dev /home/dev/.emacs.d
 
 COPY docker/entrypoint.sh /usr/local/bin/devmacs-entrypoint
 RUN chmod 0755 /usr/local/bin/devmacs-entrypoint
