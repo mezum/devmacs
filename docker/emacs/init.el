@@ -39,6 +39,10 @@ under user-emacs-directory, so bootstrap.el compiles these at build time and
 (require 'devmacs-vcs)
 (require 'devmacs-commands)
 
+;; Layered last so that a user can override anything the base config decided.
+(require 'devmacs-user)
+(devmacs-user-load)
+
 ;; Custom has to go to the state volume; the config directory is read-only.
 (setq custom-file (expand-file-name "custom.el" user-emacs-directory))
 (load custom-file :noerror :nomessage)

@@ -134,6 +134,10 @@ RUN groupadd -g 1000 dev; \
 COPY --chown=dev:dev docker/emacs /opt/devmacs/config
 ENV DEVMACS_CONFIG=/opt/devmacs/config
 
+# Where ee mounts the user's own config. Keeping it outside the image is what
+# lets it survive image updates.
+ENV DEVMACS_USER_CONFIG=/opt/devmacs/user
+
 # Packages are installed and natively compiled here rather than on first run.
 # The result cannot live in $HOME/.emacs.d, because the state volume mounted
 # there at runtime would hide it, so it is staged as a seed instead.
