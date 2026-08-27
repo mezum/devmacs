@@ -1,0 +1,5 @@
+# Produced by local builds and by mounting the config for experiments.
+*.elc
+*.eln
+eln-cache/
+elpa/
