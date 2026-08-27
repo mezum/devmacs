@@ -1,0 +1,269 @@
+#!/bin/sh
+#
+# Opens devmacs.
+#
+# Emacs runs as a daemon inside a long-lived container and this script attaches
+# with emacsclient. Tearing the container down on every invocation would mean
+# paying for native compilation and LSP indexing again each time.
+#
+set -eu
+
+: "${DEVMACS_IMAGE:=ghcr.io/mezum/devmacs:base}"
+: "${DEVMACS_NAME:=devmacs}"
+: "${DEVMACS_WORKSPACE:=${HOME}/repo}"
+: "${DEVMACS_STATE_DIR:=${XDG_DATA_HOME:-${HOME}/.local/share}/devmacs}"
+: "${DEVMACS_USER_CONFIG:=${XDG_CONFIG_HOME:-${HOME}/.config}/devmacs}"
+
+usage() {
+    cat <<'USAGE'
+Usage: ee [options] [file...]
+
+  With no file, just opens Emacs.
+
+Options:
+  --shell           open a bash shell in the container
+  --exec CMD...     run a command in the container (rest of the line is CMD)
+  --user-install    install the packages your own config declares
+  --native          use the native tag (C/C++ toolchain included)
+  --image IMAGE     use a specific image
+  --pull            fetch the image again
+  --restart         recreate the container
+  --stop            stop the container
+  --status          show what is currently set up
+  -h, --help        this
+
+Environment:
+  DEVMACS_IMAGE      image to run          (default: ghcr.io/mezum/devmacs:base)
+  DEVMACS_NAME       container name        (default: devmacs)
+  DEVMACS_WORKSPACE  source tree to mount  (default: $HOME/repo -> /workspace)
+  DEVMACS_STATE_DIR  where state lives     (default: ~/.local/share/devmacs)
+  DEVMACS_USER_CONFIG  your own config     (default: ~/.config/devmacs)
+  DEVMACS_RUNTIME    pin the runtime       (docker / podman / container / wslc)
+USAGE
+}
+
+die() { printf 'ee: %s\n' "$*" >&2; exit 1; }
+
+# The image runs anywhere, but the arguments to `run` do not line up across
+# runtimes, so the differences are absorbed here.
+detect_runtime() {
+    if [ -n "${DEVMACS_RUNTIME:-}" ]; then
+        command -v "$DEVMACS_RUNTIME" >/dev/null 2>&1 \
+            || die "DEVMACS_RUNTIME=$DEVMACS_RUNTIME not found"
+        printf '%s' "$DEVMACS_RUNTIME"
+        return
+    fi
+    for candidate in docker podman container wslc; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            printf '%s' "$candidate"
+            return
+        fi
+    done
+    die "no container runtime found (docker / podman / container / wslc)"
+}
+
+# Apple container and wslc do not handle named volumes the way docker does, so
+# they get plain host directories instead.
+uses_named_volumes() {
+    case "$RUNTIME" in
+        docker|podman) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+container_running() {
+    if "$RUNTIME" ps --format '{{.Names}}' 2>/dev/null | grep -qx "$DEVMACS_NAME"; then
+        return 0
+    fi
+    # Fallback for runtimes without --format.
+    "$RUNTIME" ps 2>/dev/null | awk 'NR > 1 { print $NF }' | grep -qx "$DEVMACS_NAME"
+}
+
+container_exists() {
+    if "$RUNTIME" ps --all --format '{{.Names}}' 2>/dev/null | grep -qx "$DEVMACS_NAME"; then
+        return 0
+    fi
+    "$RUNTIME" ps --all 2>/dev/null | awk 'NR > 1 { print $NF }' | grep -qx "$DEVMACS_NAME"
+}
+
+remove_container() {
+    "$RUNTIME" rm --force "$DEVMACS_NAME" >/dev/null 2>&1 || true
+}
+
+start_container() {
+    mkdir -p "$DEVMACS_WORKSPACE"
+
+    # `set --` inside a function is local, so the caller's file arguments survive.
+    set -- run --detach --name "$DEVMACS_NAME"
+    set -- "$@" --volume "${DEVMACS_WORKSPACE}:/workspace"
+
+    set -- "$@" --env "DEVMACS_UID=$(id -u)" --env "DEVMACS_GID=$(id -g)"
+
+    # Sharing the mise directory across every project is what allows a single
+    # container and a single daemon to serve projects that mix languages.
+    if uses_named_volumes; then
+        set -- "$@" --volume "devmacs-emacs:/home/dev/.emacs.d"
+        set -- "$@" --volume "devmacs-mise:/home/dev/.local/share/mise"
+    else
+        mkdir -p "${DEVMACS_STATE_DIR}/emacs" "${DEVMACS_STATE_DIR}/mise"
+        set -- "$@" --volume "${DEVMACS_STATE_DIR}/emacs:/home/dev/.emacs.d"
+        set -- "$@" --volume "${DEVMACS_STATE_DIR}/mise:/home/dev/.local/share/mise"
+    fi
+
+    # Mounted read-only from the host so that it survives image updates and can
+    # live in a repository of its own.
+    if [ -d "$DEVMACS_USER_CONFIG" ]; then
+        set -- "$@" --volume "${DEVMACS_USER_CONFIG}:/opt/devmacs/user:ro"
+    fi
+
+    # mise refuses to read config it does not trust.
+    set -- "$@" --env "MISE_TRUSTED_CONFIG_PATHS=/workspace"
+
+    # Docker Desktop on macOS exposes the agent at a fixed path of its own.
+    if [ "$(uname -s)" = "Darwin" ] && [ "$RUNTIME" = "docker" ]; then
+        sock=/run/host-services/ssh-auth.sock
+        set -- "$@" --volume "${sock}:${sock}" --env "SSH_AUTH_SOCK=${sock}"
+    elif [ -n "${SSH_AUTH_SOCK:-}" ] && [ -S "${SSH_AUTH_SOCK}" ]; then
+        set -- "$@" --volume "${SSH_AUTH_SOCK}:/ssh-agent" --env "SSH_AUTH_SOCK=/ssh-agent"
+    fi
+
+    set -- "$@" "$DEVMACS_IMAGE"
+
+    printf 'ee: starting %s...\n' "$DEVMACS_NAME" >&2
+    "$RUNTIME" "$@" >/dev/null
+}
+
+wait_for_daemon() {
+    i=0
+    while [ "$i" -lt 90 ]; do
+        if "$RUNTIME" exec --user dev "$DEVMACS_NAME" emacsclient --eval t >/dev/null 2>&1; then
+            return 0
+        fi
+        if ! container_running; then
+            printf 'ee: the container exited on startup. Logs:\n' >&2
+            "$RUNTIME" logs "$DEVMACS_NAME" >&2 2>&1 || true
+            return 1
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+ensure_running() {
+    if container_running; then
+        return 0
+    fi
+    if container_exists; then
+        remove_container
+    fi
+    start_container
+    wait_for_daemon || die "the Emacs daemon did not come up"
+}
+
+# Emacs dies on startup if the terminfo entry for $TERM is missing inside the
+# container, so fall back to something every image has.
+container_term() {
+    term="${TERM:-xterm-256color}"
+    if "$RUNTIME" exec --user dev "$DEVMACS_NAME" infocmp "$term" >/dev/null 2>&1; then
+        printf '%s' "$term"
+    else
+        printf 'ee: no terminfo for %s in the container, using xterm-256color\n' "$term" >&2
+        printf '%s' "xterm-256color"
+    fi
+}
+
+exec_in_container() {
+    # exec does not go through the entrypoint, so without --user this lands as
+    # root and emacsclient looks for the socket under the wrong uid.
+    set -- exec --interactive --tty --user dev \
+        --env "TERM=$(container_term)" \
+        --env "COLORTERM=${COLORTERM:-truecolor}" \
+        "$DEVMACS_NAME" "$@"
+    exec "$RUNTIME" "$@"
+}
+
+action=open
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --shell)   action=shell;   shift ;;
+        --restart) action=restart; shift ;;
+        --stop)    action=stop;    shift ;;
+        --pull)    action=pull;    shift ;;
+        --status)  action=status;  shift ;;
+        --exec)    action=run_cmd; shift; break ;;
+        --user-install) action=user_install; shift ;;
+        --native)  DEVMACS_IMAGE="${DEVMACS_IMAGE%:*}:native"; shift ;;
+        --image)   [ $# -ge 2 ] || die "--image needs a value"
+                   DEVMACS_IMAGE="$2"; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        --)        shift; break ;;
+        -*)        usage >&2; die "unknown option: $1" ;;
+        *)         break ;;
+    esac
+done
+
+RUNTIME="$(detect_runtime)"
+
+case "$action" in
+    status)
+        printf 'runtime    : %s\n' "$RUNTIME"
+        printf 'image      : %s\n' "$DEVMACS_IMAGE"
+        printf 'container  : %s (%s)\n' "$DEVMACS_NAME" \
+            "$(container_running && echo running || echo stopped)"
+        printf 'workspace  : %s -> /workspace\n' "$DEVMACS_WORKSPACE"
+        if uses_named_volumes; then
+            printf 'state      : named volumes (devmacs-emacs, devmacs-mise)\n'
+        else
+            printf 'state      : %s\n' "$DEVMACS_STATE_DIR"
+        fi
+        if [ -d "$DEVMACS_USER_CONFIG" ]; then
+            printf 'user config: %s\n' "$DEVMACS_USER_CONFIG"
+        else
+            printf 'user config: none at %s\n' "$DEVMACS_USER_CONFIG"
+        fi
+        ;;
+    stop)
+        "$RUNTIME" stop "$DEVMACS_NAME" >/dev/null 2>&1 \
+            && printf 'ee: stopped\n' >&2 \
+            || printf 'ee: not running\n' >&2
+        ;;
+    pull)
+        "$RUNTIME" pull "$DEVMACS_IMAGE"
+        printf 'ee: run ee --restart to pick up the new image\n' >&2
+        ;;
+    restart)
+        remove_container
+        start_container
+        wait_for_daemon || die "the Emacs daemon did not come up"
+        printf 'ee: recreated\n' >&2
+        ;;
+    user_install)
+        [ -d "$DEVMACS_USER_CONFIG" ] || die "no user config at $DEVMACS_USER_CONFIG"
+        ensure_running
+        # A separate -Q process, so that installing and compiling does not
+        # block the daemon people are editing in.
+        "$RUNTIME" exec --user dev "$DEVMACS_NAME" \
+            emacs --batch -Q --init-directory=/home/dev/.emacs.d \
+                  -l /opt/devmacs/config/user-install.el
+        printf 'ee: run ee --restart to load them\n' >&2
+        ;;
+    shell)
+        ensure_running
+        exec_in_container bash -l
+        ;;
+    run_cmd)
+        [ $# -gt 0 ] || die "--exec needs a command"
+        ensure_running
+        exec_in_container "$@"
+        ;;
+    open)
+        ensure_running
+        if [ $# -gt 0 ]; then
+            exec_in_container emacsclient -nw -- "$@"
+        else
+            exec_in_container emacsclient -nw
+        fi
+        ;;
+esac
