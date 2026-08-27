@@ -10,22 +10,21 @@ set -eu
 
 : "${DEVMACS_IMAGE:=ghcr.io/mezum/devmacs:base}"
 : "${DEVMACS_NAME:=devmacs}"
-: "${DEVMACS_WORKSPACE:=${HOME}/repo}"
-: "${DEVMACS_STATE_DIR:=${XDG_DATA_HOME:-${HOME}/.local/share}/devmacs}"
+# $HOME rather than a subdirectory: it always exists, and a missing workspace
+# should be an error rather than something this script silently creates.
+: "${DEVMACS_WORKSPACE:=${HOME}}"
 : "${DEVMACS_USER_CONFIG:=${XDG_CONFIG_HOME:-${HOME}/.config}/devmacs}"
 
 usage() {
     cat <<'USAGE'
-Usage: ee [options] [file...]
+Usage: ee [action] [[--] file...]
 
-  With no file, just opens Emacs.
+  With no action, opens Emacs. Files are passed to emacsclient.
 
-Options:
+Actions:
   --shell           open a bash shell in the container
   --exec CMD...     run a command in the container (rest of the line is CMD)
   --user-install    install the packages your own config declares
-  --native          use the native tag (C/C++ toolchain included)
-  --image IMAGE     use a specific image
   --pull            fetch the image again
   --restart         recreate the container
   --stop            stop the container
@@ -33,19 +32,21 @@ Options:
   -h, --help        this
 
 Environment:
-  DEVMACS_IMAGE      image to run          (default: ghcr.io/mezum/devmacs:base)
-  DEVMACS_NAME       container name        (default: devmacs)
-  DEVMACS_WORKSPACE  source tree to mount  (default: $HOME/repo -> /workspace)
-  DEVMACS_STATE_DIR  where state lives     (default: ~/.local/share/devmacs)
+  DEVMACS_IMAGE        image to run        (default: ghcr.io/mezum/devmacs:base)
+  DEVMACS_NAME         container name      (default: devmacs)
+  DEVMACS_WORKSPACE    directory to mount  (default: $HOME -> /workspace)
   DEVMACS_USER_CONFIG  your own config     (default: ~/.config/devmacs)
-  DEVMACS_RUNTIME    pin the runtime       (docker / podman / container / wslc)
+  DEVMACS_STATE_DIR    host dir for state  (default: named volumes)
+  DEVMACS_RUNTIME      pin the runtime
 USAGE
 }
 
 die() { printf 'ee: %s\n' "$*" >&2; exit 1; }
 
-# The image runs anywhere, but the arguments to `run` do not line up across
-# runtimes, so the differences are absorbed here.
+# All of these speak enough of the docker CLI for what is used below, including
+# named volumes and `exec --user --env`.
+RUNTIMES='docker podman nerdctl finch container wslc'
+
 detect_runtime() {
     if [ -n "${DEVMACS_RUNTIME:-}" ]; then
         command -v "$DEVMACS_RUNTIME" >/dev/null 2>&1 \
@@ -53,22 +54,13 @@ detect_runtime() {
         printf '%s' "$DEVMACS_RUNTIME"
         return
     fi
-    for candidate in docker podman container wslc; do
+    for candidate in $RUNTIMES; do
         if command -v "$candidate" >/dev/null 2>&1; then
             printf '%s' "$candidate"
             return
         fi
     done
-    die "no container runtime found (docker / podman / container / wslc)"
-}
-
-# Apple container and wslc do not handle named volumes the way docker does, so
-# they get plain host directories instead.
-uses_named_volumes() {
-    case "$RUNTIME" in
-        docker|podman) return 0 ;;
-        *) return 1 ;;
-    esac
+    die "no container runtime found (tried: $RUNTIMES)"
 }
 
 container_running() {
@@ -91,7 +83,7 @@ remove_container() {
 }
 
 start_container() {
-    mkdir -p "$DEVMACS_WORKSPACE"
+    [ -d "$DEVMACS_WORKSPACE" ] || die "workspace not found: $DEVMACS_WORKSPACE"
 
     # `set --` inside a function is local, so the caller's file arguments survive.
     set -- run --detach --name "$DEVMACS_NAME"
@@ -101,13 +93,15 @@ start_container() {
 
     # Sharing the mise directory across every project is what allows a single
     # container and a single daemon to serve projects that mix languages.
-    if uses_named_volumes; then
-        set -- "$@" --volume "devmacs-emacs:/home/dev/.emacs.d"
-        set -- "$@" --volume "devmacs-mise:/home/dev/.local/share/mise"
-    else
+    # Named volumes work on every runtime above; DEVMACS_STATE_DIR is the way
+    # out if one of them ever misbehaves or the state needs to be inspected.
+    if [ -n "${DEVMACS_STATE_DIR:-}" ]; then
         mkdir -p "${DEVMACS_STATE_DIR}/emacs" "${DEVMACS_STATE_DIR}/mise"
         set -- "$@" --volume "${DEVMACS_STATE_DIR}/emacs:/home/dev/.emacs.d"
         set -- "$@" --volume "${DEVMACS_STATE_DIR}/mise:/home/dev/.local/share/mise"
+    else
+        set -- "$@" --volume "devmacs-emacs:/home/dev/.emacs.d"
+        set -- "$@" --volume "devmacs-mise:/home/dev/.local/share/mise"
     fi
 
     # Mounted read-only from the host so that it survives image updates and can
@@ -187,20 +181,17 @@ action=open
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --shell)   action=shell;   shift ;;
-        --restart) action=restart; shift ;;
-        --stop)    action=stop;    shift ;;
-        --pull)    action=pull;    shift ;;
-        --status)  action=status;  shift ;;
-        --exec)    action=run_cmd; shift; break ;;
+        --shell)        action=shell;        shift ;;
+        --restart)      action=restart;      shift ;;
+        --stop)         action=stop;         shift ;;
+        --pull)         action=pull;         shift ;;
+        --status)       action=status;       shift ;;
         --user-install) action=user_install; shift ;;
-        --native)  DEVMACS_IMAGE="${DEVMACS_IMAGE%:*}:native"; shift ;;
-        --image)   [ $# -ge 2 ] || die "--image needs a value"
-                   DEVMACS_IMAGE="$2"; shift 2 ;;
-        -h|--help) usage; exit 0 ;;
-        --)        shift; break ;;
-        -*)        usage >&2; die "unknown option: $1" ;;
-        *)         break ;;
+        --exec)         action=run_cmd;      shift; break ;;
+        -h|--help)      usage; exit 0 ;;
+        --)             shift; break ;;
+        -*)             usage >&2; die "unknown action: $1" ;;
+        *)              break ;;
     esac
 done
 
@@ -213,10 +204,10 @@ case "$action" in
         printf 'container  : %s (%s)\n' "$DEVMACS_NAME" \
             "$(container_running && echo running || echo stopped)"
         printf 'workspace  : %s -> /workspace\n' "$DEVMACS_WORKSPACE"
-        if uses_named_volumes; then
-            printf 'state      : named volumes (devmacs-emacs, devmacs-mise)\n'
-        else
+        if [ -n "${DEVMACS_STATE_DIR:-}" ]; then
             printf 'state      : %s\n' "$DEVMACS_STATE_DIR"
+        else
+            printf 'state      : named volumes (devmacs-emacs, devmacs-mise)\n'
         fi
         if [ -d "$DEVMACS_USER_CONFIG" ]; then
             printf 'user config: %s\n' "$DEVMACS_USER_CONFIG"
@@ -231,7 +222,10 @@ case "$action" in
         ;;
     pull)
         "$RUNTIME" pull "$DEVMACS_IMAGE"
-        printf 'ee: run ee --restart to pick up the new image\n' >&2
+        # Nothing to recreate on a first install, so only say it when there is.
+        if container_exists; then
+            printf 'ee: run ee --restart to pick up the new image\n' >&2
+        fi
         ;;
     restart)
         remove_container
