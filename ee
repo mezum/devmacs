@@ -13,6 +13,7 @@ set -eu
 # $HOME rather than a subdirectory: it always exists, and a missing workspace
 # should be an error rather than something this script silently creates.
 : "${DEVMACS_WORKSPACE:=${HOME}}"
+DEVMACS_WORKSPACE="${DEVMACS_WORKSPACE%/}"
 : "${DEVMACS_USER_CONFIG:=${XDG_CONFIG_HOME:-${HOME}/.config}/devmacs}"
 
 usage() {
@@ -167,11 +168,49 @@ container_term() {
     fi
 }
 
+# exec starts in the image's WORKDIR, so without this a relative file argument
+# resolves against /workspace no matter where ee was run from.
+container_workdir() {
+    # Compared as physical paths, since a symlinked directory would otherwise
+    # never match the workspace it actually lives under.
+    workspace="$(cd "$DEVMACS_WORKSPACE" 2>/dev/null && pwd -P)" \
+        || workspace="$DEVMACS_WORKSPACE"
+    here="$(pwd -P)"
+
+    case "$here" in
+        "$workspace")
+            printf '/workspace' ;;
+        "$workspace"/*)
+            printf '/workspace%s' "${here#"$workspace"}" ;;
+        *)
+            # Falling back to the workspace root would drop files somewhere the
+            # user never asked for, which is the very thing this function exists
+            # to prevent. A warning is not enough - it can be missed, and by then
+            # the file has already been written to the wrong place.
+            die "$here is outside $DEVMACS_WORKSPACE (set DEVMACS_WORKSPACE, or cd into it)" ;;
+    esac
+}
+
 exec_in_container() {
+    # die inside a command substitution only ends the subshell, so the failure
+    # has to be acted on here.
+    workdir="$(container_workdir)" || exit 1
+    term="$(container_term)"
+
+    # Asked for only when there is one to pass through, so that --exec is
+    # usable from a script and from the checks in tests/.
+    tty_opt=""
+    if [ -t 0 ] && [ -t 1 ]; then
+        tty_opt="--tty"
+    fi
+
     # exec does not go through the entrypoint, so without --user this lands as
     # root and emacsclient looks for the socket under the wrong uid.
-    set -- exec --interactive --tty --user dev \
-        --env "TERM=$(container_term)" \
+    #
+    # shellcheck disable=SC2086  # tty_opt is one option or nothing
+    set -- exec --interactive $tty_opt --user dev \
+        --workdir "$workdir" \
+        --env "TERM=${term}" \
         --env "COLORTERM=${COLORTERM:-truecolor}" \
         "$DEVMACS_NAME" "$@"
     exec "$RUNTIME" "$@"

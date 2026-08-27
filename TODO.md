@@ -14,6 +14,12 @@
   images, but `EMACS_VERSION`, `MISE_VERSION` and `LSP_BOOSTER_VERSION` are ARG
   values it cannot read, so they are still updated by hand.
 
+- **Prompts block the daemon when nothing can answer them** - opening a file
+  next to a `mise.toml` makes `buffer-env` ask whether it may run it, and a
+  source file can make `treesit-auto` ask about a grammar. Interactively that is
+  fine, but a file opened with no terminal attached - `ee --exec emacsclient -n
+  ...`, say - leaves the whole daemon waiting.
+
 ## Not verified
 
 CI runs the container checks on Linux only. Neither hosted platform can run

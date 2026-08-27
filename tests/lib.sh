@@ -79,18 +79,28 @@ emacs_eval() {
 
 make_fixture() {
     rm -rf "$FIXTURE_DIR"
-    mkdir -p "$FIXTURE_DIR/workspace/demo" "$FIXTURE_DIR/user-config/user-lisp"
+    mkdir -p "$FIXTURE_DIR/workspace/demo" \
+             "$FIXTURE_DIR/workspace/plain" \
+             "$FIXTURE_DIR/user-config/user-lisp"
 
     printf '[tools]\nnode = "22"\n' > "$FIXTURE_DIR/workspace/demo/mise.toml"
     printf 'console.log("hi")\n'    > "$FIXTURE_DIR/workspace/demo/index.js"
 
+    # Deliberately away from mise.toml, and plain text. Opening a file next to
+    # one makes buffer-env ask whether it may run it, and a source file can make
+    # treesit-auto ask about a grammar; with no terminal to answer, either
+    # prompt blocks the whole daemon.
+    printf 'hello\n'                > "$FIXTURE_DIR/workspace/plain/a.txt"
+
     cat > "$FIXTURE_DIR/user-config/init.el" <<'ELISP'
+;;; -*- lexical-binding: t; -*-
 (require 'devmacs-test-probe)
 (setq-default fill-column 72)
 (defvar devmacs-test-user-init-loaded t)
 ELISP
 
     cat > "$FIXTURE_DIR/user-config/user-lisp/devmacs-test-probe.el" <<'ELISP'
+;;; -*- lexical-binding: t; -*-
 (defvar devmacs-test-user-lisp-loaded t)
 (provide 'devmacs-test-probe)
 ELISP
