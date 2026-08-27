@@ -1,0 +1,125 @@
+name: test
+
+# Everything that says whether a change is sound, kept apart from publishing so
+# that a pull request runs only this. Results are mirrored into the job summary
+# by tests/lib.sh, so a reviewer sees what was checked without opening a log.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck --shell=sh --severity=warning \
+            ee docker/entrypoint.sh tests/*.sh
+
+  # Neither the Windows nor the macOS hosted runners can run Linux containers -
+  # Windows has no WSL2 backend for Docker, and the arm64 macOS runners have no
+  # nested virtualisation - so these cover what needs no container. It is still
+  # the only place the Windows launchers can be run at all.
+  cli:
+    name: cli (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ee
+        shell: bash
+        run: sh tests/00-cli.sh
+
+      - name: ee.ps1 reaches ee
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = ./ee.ps1 --help 2>&1 | Out-String
+          if ($out -notmatch 'Usage: ee') {
+            Write-Host $out
+            exit 1
+          }
+          Write-Host 'ok'
+
+      - name: ee.bat reaches ee
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          ee.bat --help | findstr /C:"Usage: ee" > nul || exit /b 1
+          echo ok
+
+      # What each platform actually offers is worth recording; TODO.md tracks
+      # which of these have been exercised for real.
+      - name: available runtimes
+        shell: bash
+        run: |
+          for r in docker podman nerdctl finch container wslc; do
+            if command -v "$r" >/dev/null 2>&1; then
+              echo "found : $r"
+            else
+              echo "absent: $r"
+            fi
+          done
+
+  container:
+    name: container (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [slim, base]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          load: true
+          tags: devmacs:test
+          cache-from: type=gha,scope=${{ matrix.target }}-amd64
+          cache-to: type=gha,mode=max,scope=test-${{ matrix.target }}
+
+      - name: Run checks
+        run: tests/run.sh
+        env:
+          DEVMACS_TEST_IMAGE: devmacs:test
+          DEVMACS_TEST_VARIANT: ${{ matrix.target }}
+
+  # One job to require in the branch protection rule, so that adding a matrix
+  # entry never means editing that setting.
+  all-checks:
+    name: all checks
+    if: always()
+    needs: [lint, cli, container]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Gate
+        run: |
+          printf '%s' '${{ toJSON(needs) }}' > needs.json
+          cat needs.json
+          {
+            printf '\n### Result\n\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if jq -e 'all(.[]; .result == "success")' needs.json > /dev/null; then
+            printf 'All checks passed.\n' >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf 'These did not pass:\n\n' >> "$GITHUB_STEP_SUMMARY"
+            jq -r 'to_entries[]
+                   | select(.value.result != "success")
+                   | "- `\(.key)`: \(.value.result)"' needs.json \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

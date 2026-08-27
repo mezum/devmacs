@@ -167,6 +167,10 @@ curl -sL https://ftp.gnu.org/gnu/emacs/emacs-31.1.tar.xz | shasum -a 256
 The runtime library list in the `slim` stage needs a look when the Debian
 release changes, since some package names carry a version.
 
+Pull requests run the checks above; `all checks` is the single job to require
+in the branch protection rule, so that adding a matrix entry never means
+editing that setting.
+
 What is missing or unverified is tracked in [TODO.md](TODO.md).
 
 [wezterm]: https://wezterm.org/
