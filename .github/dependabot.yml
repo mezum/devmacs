@@ -1,0 +1,35 @@
+# Grouped into one pull request per ecosystem, because a daily interval would
+# otherwise open several at once for what is usually a single bump.
+#
+# This does not cover the tool versions pinned as ARG values in the Dockerfile
+# (Emacs, mise, emacs-lsp-booster); those are bumped by hand, see the README.
+
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+      time: "04:00"
+      timezone: Asia/Tokyo
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  # Reaches the base images the Dockerfile builds on. Debian release names do
+  # not follow a version order Dependabot can compare, so in practice this
+  # tracks the rust image and anything later pinned by digest.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: daily
+      time: "04:00"
+      timezone: Asia/Tokyo
+    groups:
+      images:
+        patterns: ["*"]
+    commit-message:
+      prefix: build

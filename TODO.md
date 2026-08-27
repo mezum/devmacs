@@ -10,6 +10,10 @@
   is ignored. Mounting `$HOME` covers most of it in practice, but a project
   outside `$HOME` needs `DEVMACS_WORKSPACE` and a restart.
 
+- **Bumping the pinned tools** - Dependabot covers the actions and the base
+  images, but `EMACS_VERSION`, `MISE_VERSION` and `LSP_BOOSTER_VERSION` are ARG
+  values it cannot read, so they are still updated by hand.
+
 ## Not verified
 
 CI runs the container checks on Linux only. Neither hosted platform can run
